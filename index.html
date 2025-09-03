@@ -1,0 +1,205 @@
+<!doctype html>
+
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>فتح كاميرا الهاتف (كاميرا خارجية) والتقاط عند الضغط على R</title>
+  <style>
+    body{margin:0;padding:18px;font-family:system-ui, sans-serif;background:#0f172a;color:#e6eef8;direction:rtl}
+    h1{font-size:18px;margin:0 0 12px}
+    p{margin:6px 0 18px;color:#cbd5e1}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+    button{background:#2563eb;border:0;padding:8px 12px;border-radius:8px;color:white;cursor:pointer}
+    select{padding:8px;border-radius:8px;border:1px solid #24303f;background:#0b1220;color:#e6eef8}
+    video{width:100%;height:auto;border-radius:12px;background:#000;display:block}
+    #gallery{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+    .thumb{background:#071024;padding:8px;border-radius:8px;width:200px}
+    .thumb img{width:100%;height:auto;border-radius:4px;display:block}
+    a.download{font-size:13px;color:#9ae6ff;text-decoration:none}
+    .note{font-size:13px;color:#94a3b8}
+    #flash{position:fixed;inset:0;pointer-events:none;background:white;opacity:0;transition:opacity .18s}
+  </style>
+</head>
+<body>
+  <div id="flash"></div>
+  <h1>فتح الكاميرا الخارجية — ملف .LEX-Q (كاميرا خلفية)</h1>
+  <p>الصفحة تفتح كاميرا الجهاز. اختر الكاميرا الخلفية (External / Rear) من القائمة إن كانت متاحة، ثم اضغط <strong>R</strong> أو زر "التقاط" لالتقاط الصورة.</p>  <div class="controls">
+    <select id="cameraSelect"><option>جاري البحث عن الأجهزة...</option></select>
+    <button id="startBtn">تشغيل الكاميرا</button>
+    <button id="stopBtn">إيقاف الكاميرا</button>
+    <button id="snapBtn">التقاط الآن</button>
+    <div class="note">اضغط <strong>R</strong> لالتقاط بسرعة</div>
+  </div><video id="preview" autoplay playsinline></video>
+
+  <div id="gallery" aria-live="polite"></div>  <script>
+    // Strategy: نحاول اختيار الكاميرا الخلفية أولاً عبر deviceId (فإذا وجدنا جهاز بملصق 'back' أو 'rear' أو facingMode=environment)
+    const preview = document.getElementById('preview')
+    const cameraSelect = document.getElementById('cameraSelect')
+    const startBtn = document.getElementById('startBtn')
+    const stopBtn = document.getElementById('stopBtn')
+    const snapBtn = document.getElementById('snapBtn')
+    const gallery = document.getElementById('gallery')
+    const flash = document.getElementById('flash')
+
+    let currentStream = null
+    let shots = 0
+
+    function flashScreen(){
+      flash.style.opacity = '0.9'
+      setTimeout(()=> flash.style.opacity = '0', 120)
+    }
+
+    async function listCameras(){
+      try{
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const cams = devices.filter(d=>d.kind === 'videoinput')
+        cameraSelect.innerHTML = ''
+        if(cams.length === 0){
+          cameraSelect.innerHTML = '<option>لا توجد كاميرات</option>'
+          return
+        }
+
+        // ترتيب: ضع الكاميرات التي تبدو "خلفية" في الأعلى (تحسس من الملصقات)
+        cams.sort((a,b)=>{
+          const backKeywords = /back|rear|environment|خلفي|خلفية/i
+          const aScore = backKeywords.test(a.label) ? 1 : 0
+          const bScore = backKeywords.test(b.label) ? 1 : 0
+          return bScore - aScore
+        })
+
+        cams.forEach(c=>{
+          const opt = document.createElement('option')
+          opt.value = c.deviceId
+          // بعض المتصفحات لا تكشف الملصق قبل السماح بالإذن
+          opt.textContent = c.label || ('كاميرا ' + (cameraSelect.length + 1))
+          cameraSelect.appendChild(opt)
+        })
+
+        // أضف خيار تلقائي يستخدم facingMode=environment إذا لم يعمل deviceId
+        const envOpt = document.createElement('option')
+        envOpt.value = 'env_facing'
+        envOpt.textContent = 'افتراضي: الكاميرا الخلفية (إن وُجدت)'
+        cameraSelect.insertBefore(envOpt, cameraSelect.firstChild)
+      }catch(err){
+        console.error('خطأ في جلب الأجهزة:', err)
+        cameraSelect.innerHTML = '<option>تعذر الوصول لأجهزة الوسائط</option>'
+      }
+    }
+
+    async function startCamera(){
+      stopCamera()
+      let constraints = null
+      const choice = cameraSelect.value
+
+      if(choice === 'env_facing'){
+        constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }
+      }else{
+        constraints = { video: { deviceId: { exact: choice }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }
+      }
+
+      try{
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints)
+        preview.srcObject = currentStream
+        await listCameras() // اعادة تحديث الملصقات
+      }catch(err){
+        console.error('تعذر تشغيل الكاميرا:', err)
+        // حاول fallback إلى facingMode إذا فشل deviceId
+        if(choice && choice !== 'env_facing'){
+          cameraSelect.value = 'env_facing'
+          return startCamera()
+        }
+        alert('فشل تشغيل الكاميرا. تأكد من أن الموقع لديه إذن بالكاميرا وأن المتصفح يدعم getUserMedia.')
+      }
+    }
+
+    function stopCamera(){
+      if(currentStream){
+        currentStream.getTracks().forEach(t=>t.stop())
+        currentStream = null
+        preview.srcObject = null
+      }
+    }
+
+    function takePhoto(){
+      if(!preview.srcObject){
+        alert('الكاميرا غير مشغلة')
+        return
+      }
+      flashScreen()
+      const videoTrack = preview.srcObject.getVideoTracks()[0]
+      const settings = videoTrack.getSettings()
+
+      const canvas = document.createElement('canvas')
+      const w = settings.width || preview.videoWidth || 1280
+      const h = settings.height || preview.videoHeight || 720
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      // للرسم بشكل صحيح مع الكاميرات الخلفية النقالة، قد تحتاج لتدوير/انعكاس حسب الجهاز. نرسم كما هو.
+      ctx.drawImage(preview, 0, 0, w, h)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+      addToGallery(dataUrl)
+    }
+
+    function addToGallery(dataUrl){
+      shots++
+      const box = document.createElement('div')
+      box.className = 'thumb'
+
+      const img = document.createElement('img')
+      img.src = dataUrl
+      img.alt = 'لقطة ' + shots
+
+      const meta = document.createElement('div')
+      meta.style.display = 'flex'
+      meta.style.justifyContent = 'space-between'
+      meta.style.marginTop = '8px'
+
+      const dl = document.createElement('a')
+      dl.href = dataUrl
+      dl.download = `camera_${Date.now()}.jpg`
+      dl.className = 'download'
+      dl.textContent = 'تحميل'
+
+      const del = document.createElement('button')
+      del.textContent = 'حذف'
+      del.style.background = 'transparent'
+      del.style.border = '1px solid #1f2937'
+      del.style.color = '#e6eef8'
+      del.style.padding = '6px 8px'
+      del.style.borderRadius = '6px'
+      del.style.cursor = 'pointer'
+
+      del.addEventListener('click', ()=> box.remove())
+
+      meta.appendChild(dl)
+      meta.appendChild(del)
+
+      box.appendChild(img)
+      box.appendChild(meta)
+
+      gallery.prepend(box)
+    }
+
+    // أحداث
+    startBtn.addEventListener('click', startCamera)
+    stopBtn.addEventListener('click', stopCamera)
+    snapBtn.addEventListener('click', takePhoto)
+
+    window.addEventListener('keydown', (e)=>{
+      const tag = (e.target && e.target.tagName) || ''
+      if(tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return
+      if(e.key.toLowerCase() === 'r'){
+        e.preventDefault()
+        takePhoto()
+      }
+    })
+
+    // عند التحميل: اطلب قائمة الكاميرات. سيطلب المتصفح إذناً عند محاولة التشغيل
+    listCameras()
+
+    // نظافة عند ترك الصفحة
+    window.addEventListener('pagehide', stopCamera)
+  </script></body>
+</html>
